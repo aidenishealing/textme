@@ -5,7 +5,8 @@
 import fs from 'fs';
 import path from 'path';
 import os from 'os';
-import { PhoneNumberUtil, PhoneNumberFormat } from 'google-libphonenumber';
+import libphonenumber from 'google-libphonenumber';
+const { PhoneNumberUtil, PhoneNumberFormat } = libphonenumber;
 const phoneUtil = PhoneNumberUtil.getInstance();
 /**
  * Format a phone number to E.164 format (+1XXXXXXXXXX)

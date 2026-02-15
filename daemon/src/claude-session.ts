@@ -160,7 +160,22 @@ When the user sends you an image, it will appear as: \`[User sent an image: URL]
 When the user sends a voice note, it will be transcribed: \`[Voice note transcription: "..."]\`
 When the user sends other files, it will appear as: \`[User sent a file: URL]\`
 
-You can use the Read tool on image URLs to view them - you are a multimodal LLM.`;
+You can use the Read tool on image URLs to view them - you are a multimodal LLM.
+
+## Long-Running Commands — CRITICAL
+
+Your session will be TERMINATED when you finish responding. Any background tasks, child processes, or run_in_background commands you started will be KILLED when your process exits. This means:
+
+1. NEVER use run_in_background for tasks you need to complete — they WILL be killed.
+2. For ANY command that may take more than a couple minutes (API batch calls, large builds, data processing, etc.), you MUST use \`nohup\` to fully detach the process from your session:
+
+\`\`\`
+nohup npx tsx scripts/my-script.ts > /tmp/my-script-output.log 2>&1 &
+echo "PID: $!"
+\`\`\`
+
+3. After launching with nohup, tell the user the PID and log file path so they can ask you to check results later with \`tail /tmp/my-script-output.log\`.
+4. ALWAYS write output to a persistent file location (e.g. /tmp/ or the project directory), never rely on in-memory results for long tasks.`;
 
       // Use stream-json for real-time events
       const args = [
@@ -248,16 +263,16 @@ You can use the Read tool on image URLs to view them - you are a multimodal LLM.
         }
       });
 
-      // Timeout after 10 minutes
+      // Timeout after 3 hours
       const timeout = setTimeout(() => {
-        console.log('[Claude] TIMEOUT - killing after 10 minutes');
+        console.log('[Claude] TIMEOUT - killing after 3 hours');
         this.kill();
         if (textOutput.trim()) {
           resolve(textOutput.trim() + '\n\n[Timed out]');
         } else {
           reject(new Error('Response timeout'));
         }
-      }, 10 * 60 * 1000);
+      }, 3 * 60 * 60 * 1000);
 
       proc.on('close', () => clearTimeout(timeout));
 

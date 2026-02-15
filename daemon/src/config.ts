@@ -6,7 +6,8 @@
 import fs from 'fs';
 import path from 'path';
 import os from 'os';
-import { PhoneNumberUtil, PhoneNumberFormat } from 'google-libphonenumber';
+import libphonenumber from 'google-libphonenumber';
+const { PhoneNumberUtil, PhoneNumberFormat } = libphonenumber;
 import type { DaemonConfig } from './types.js';
 
 const phoneUtil = PhoneNumberUtil.getInstance();

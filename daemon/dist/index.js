@@ -142,6 +142,13 @@ let pollInterval = null;
 let lastPollTime;
 let isPolling = false;
 let isProcessingMessage = false;
+// Message coalescing — if a new message arrives within this window of the
+// current Claude process starting, we kill the process and restart with
+// all messages combined. After the window, messages are queued normally.
+const COALESCE_WINDOW_MS = 10_000;
+let currentProcessingStartTime = 0;
+let currentProcessingPhone = '';
+let currentProcessingContent = '';
 /**
  * Format a timestamp as a relative time (e.g., "2 hours ago")
  */
@@ -575,6 +582,9 @@ async function processMessage(messageHandle, phoneNumber, content, fromQueue = f
     addConversationMessage(phoneNumber, 'user', content);
     try {
         isProcessingMessage = true;
+        currentProcessingStartTime = Date.now();
+        currentProcessingPhone = phoneNumber;
+        currentProcessingContent = content;
         let activityUpdateCount = 0;
         // Tool activity callback - sends real-time updates when Claude uses tools
         const onToolActivity = async (activity) => {
@@ -629,6 +639,9 @@ async function processMessage(messageHandle, phoneNumber, content, fromQueue = f
     }
     finally {
         isProcessingMessage = false;
+        currentProcessingStartTime = 0;
+        currentProcessingPhone = '';
+        currentProcessingContent = '';
     }
     // Check for queued messages
     await processQueue();
@@ -682,6 +695,62 @@ async function handleInterrupt(phoneNumber) {
     }
 }
 /**
+ * Coalesce consecutive non-command messages from the same user in a single
+ * poll batch. Commands (help, status, cd, etc.) act as "barriers" — they
+ * break the coalescing and are processed individually.
+ */
+function coalesceBatch(msgs) {
+    if (msgs.length <= 1)
+        return msgs;
+    const isCommand = (content) => {
+        return isHelpCommand(content)
+            || isStatusCommand(content)
+            || isQueueCommand(content)
+            || isHistoryCommand(content).isHistory
+            || isInterruptCommand(content)
+            || isHomeCommand(content)
+            || isResetCommand(content)
+            || isDirsCommand(content)
+            || isCdCommand(content).isCD;
+    };
+    const result = [];
+    let accumulator = null;
+    let accCount = 0;
+    for (const item of msgs) {
+        if (isCommand(item.content)) {
+            // Flush any accumulated messages
+            if (accumulator) {
+                result.push(accumulator);
+                accumulator = null;
+            }
+            result.push(item);
+            continue;
+        }
+        if (!accumulator) {
+            accumulator = { ...item };
+            accCount = 1;
+        }
+        else if (accumulator.msg.from_number === item.msg.from_number) {
+            // Same user, combine
+            accumulator.content += '\n\n' + item.content;
+            accCount++;
+        }
+        else {
+            // Different user, flush and start new
+            result.push(accumulator);
+            accumulator = { ...item };
+            accCount = 1;
+        }
+    }
+    if (accumulator) {
+        if (accCount > 1) {
+            console.log(`[Coalesce] Combined ${accCount} messages from same user in batch`);
+        }
+        result.push(accumulator);
+    }
+    return result;
+}
+/**
  * Poll for messages
  */
 async function poll() {
@@ -699,6 +768,7 @@ async function poll() {
         // 1 line for polling status
         const status = isProcessingMessage ? 'busy' : (queueLen > 0 ? `queue=${queueLen}` : 'idle');
         console.log(`[Poll] ${messages.length} msgs (${pollDuration}ms) | ${status}`);
+        const processedMsgs = [];
         for (const msg of messages) {
             if (isMessageProcessed(msg.message_handle))
                 continue;
@@ -708,12 +778,10 @@ async function poll() {
             }
             const textContent = msg.content?.trim() || '';
             const mediaUrl = msg.media_url;
-            // Skip if no text AND no media
             if (!textContent && !mediaUrl) {
                 markMessageProcessed(msg.message_handle);
                 continue;
             }
-            // Build combined content with media info
             let content = textContent;
             if (mediaUrl) {
                 const mediaType = detectMediaType(mediaUrl);
@@ -723,7 +791,6 @@ async function poll() {
                     console.log(`[Poll] New image: ${mediaUrl.substring(0, 50)}...`);
                 }
                 else if (mediaType === 'audio') {
-                    // For voice notes, try to transcribe
                     console.log(`[Poll] New voice note: ${mediaUrl.substring(0, 50)}...`);
                     try {
                         const transcription = await transcribeAudio(mediaUrl);
@@ -747,9 +814,14 @@ async function poll() {
                     content = textContent ? `${textContent}\n\n${fileNotice}` : fileNotice;
                 }
             }
-            // 1 line per new message
             console.log(`[Poll] New: "${content.substring(0, 80)}${content.length > 80 ? '...' : ''}"`);
             markMessageProcessed(msg.message_handle);
+            processedMsgs.push({ msg, content });
+        }
+        // Batch coalesce: group consecutive non-command messages from the same user
+        // when idle, so they get sent to Claude as one combined prompt
+        const batchedMsgs = coalesceBatch(processedMsgs);
+        for (const { msg, content } of batchedMsgs) {
             // Handle help command immediately
             if (isHelpCommand(content)) {
                 await sendblue.sendMessage(msg.from_number, HELP_MESSAGE);
@@ -915,8 +987,41 @@ async function poll() {
                     continue;
                 }
             }
-            // If busy, queue the message and notify user
+            // If busy, check if we should coalesce or queue
             if (isProcessingMessage || getRunningTask()) {
+                const elapsed = Date.now() - currentProcessingStartTime;
+                const sameUser = msg.from_number === currentProcessingPhone;
+                if (sameUser && elapsed < COALESCE_WINDOW_MS) {
+                    // Within grace period — kill current process and restart with combined message
+                    const combinedContent = currentProcessingContent + '\n\n' + content;
+                    console.log(`[Coalesce] New message within ${Math.round(elapsed / 1000)}s — restarting with combined input`);
+                    // Kill the running Claude process
+                    killCurrentSession();
+                    isProcessingMessage = false;
+                    currentProcessingStartTime = 0;
+                    // Drain any queued messages from this user into the combined message too
+                    let finalContent = combinedContent;
+                    const queuedMessages = getAllQueuedMessages();
+                    for (const qm of queuedMessages) {
+                        if (qm.phone_number === msg.from_number) {
+                            finalContent += '\n\n' + qm.content;
+                            removeQueuedMessage(qm.id);
+                        }
+                    }
+                    // Fire off the combined message
+                    processMessage(msg.message_handle, msg.from_number, finalContent).catch(async (outerError) => {
+                        const errorMsg = outerError instanceof Error ? outerError.message : String(outerError);
+                        console.error('[Poll] Coalesced message processing failed:', errorMsg);
+                        try {
+                            await sendblue.sendMessage(msg.from_number, `⚠️ Error: ${errorMsg}`);
+                        }
+                        catch (sendErr) {
+                            console.error('[Poll] Failed to send error notification:', sendErr);
+                        }
+                    });
+                    continue;
+                }
+                // Past grace period — queue normally
                 queueMessage(msg.message_handle, msg.from_number, content);
                 const qLen = getQueueLength();
                 const workingDir = getWorkingDirectory();

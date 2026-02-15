@@ -1,7 +1,7 @@
 /**
  * Sendblue API client for sending and receiving iMessages
  */
-const SENDBLUE_API_BASE = 'https://api.sendblue.com/api';
+const SENDBLUE_API_BASE = 'https://api.sendblue.co/api';
 export class SendblueClient {
     apiKey;
     apiSecret;

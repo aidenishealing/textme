@@ -4,7 +4,7 @@
 
 import type { SendblueMessage, DaemonConfig } from './types.js';
 
-const SENDBLUE_API_BASE = 'https://api.sendblue.com/api';
+const SENDBLUE_API_BASE = 'https://api.sendblue.co/api';
 
 export class SendblueClient {
   private apiKey: string;

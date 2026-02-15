@@ -57,15 +57,23 @@ nano ~/.config/claude-imessage/config.json
 }
 ```
 
-### 4. Run
+### 4. Voice Notes (Optional)
+
+To enable voice memo transcription, add your OpenAI API key to `daemon/.env`:
+
+```bash
+echo "OPENAI_API_KEY=sk-your-key-here" > daemon/.env
+```
+
+### 5. Run
 
 ```bash
 git clone https://github.com/njerschow/textme.git
 cd textme/daemon && npm install && npm run build
-node dist/index.js
+npm start
 ```
 
-### 5. Test
+### 6. Test
 
 Text your Sendblue number: `hello`
 
