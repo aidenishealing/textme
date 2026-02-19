@@ -13,6 +13,7 @@ function findClaudePath(): string {
     return execSync('which claude', { encoding: 'utf-8' }).trim();
   } catch {
     const paths = [
+      '/opt/homebrew/bin/claude',
       '/usr/local/bin/claude',
       `${process.env.HOME}/.local/bin/claude`,
     ];
@@ -189,9 +190,13 @@ echo "PID: $!"
 
       console.log(`[Claude] Spawning: ${CLAUDE_PATH} ${args.join(' ')}`);
 
+      // Remove CLAUDECODE env var to avoid "nested sessions" error
+      const env = { ...process.env };
+      delete env.CLAUDECODE;
+
       const proc = spawn(CLAUDE_PATH, args, {
         cwd: this.config.workingDirectory,
-        env: { ...process.env },
+        env,
         stdio: ['pipe', 'pipe', 'pipe'],
       });
 
