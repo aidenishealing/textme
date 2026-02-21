@@ -182,6 +182,20 @@ echo "PID: $!"
 3. After launching with nohup, tell the user the PID and log file path so they can ask you to check results later with \`tail /tmp/my-script-output.log\`.
 4. ALWAYS write output to a persistent file location (e.g. /tmp/ or the project directory), never rely on in-memory results for long tasks.
 
+## Async Task Follow-ups (PENDING_CHECKS.md)
+
+When you kick off a long-running task that you can't wait for (e.g. a sitebuddy request, a nohup script, a deployment), write a check to \`/Users/n/Documents/PassiveIncome/SendblueBase/textme/PENDING_CHECKS.md\`:
+
+\`\`\`markdown
+## Check: [description]
+- **Created:** [timestamp]
+- **What to check:** [specific command to run, e.g. "ssh n@34.170.237.32 pm2 logs groupclaude --lines 20"]
+- **Expected:** [what success looks like]
+- **Action if done:** [e.g. "tell user the result, then delete this check"]
+\`\`\`
+
+At the START of each session, if PENDING_CHECKS.md has entries, **act on them proactively** — run the check commands and report results to the user BEFORE handling their current request. After a check is resolved, remove it from the file. Keep the file empty when there are no pending checks.
+
 ## Project Context Notes
 
 You maintain a lightweight project memory system for continuity across sessions.

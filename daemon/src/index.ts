@@ -690,6 +690,17 @@ async function askClaude(
     }
   } catch {}
 
+  // Read pending checks — async tasks that need follow-up
+  const pendingChecksPath = '/Users/n/Documents/PassiveIncome/SendblueBase/textme/PENDING_CHECKS.md';
+  try {
+    if (fs.existsSync(pendingChecksPath)) {
+      const checksContent = fs.readFileSync(pendingChecksPath, 'utf-8').trim();
+      if (checksContent) {
+        contextPrompt += `\n[Pending Checks — act on these proactively before responding]\n${checksContent}\n---\n`;
+      }
+    }
+  } catch {}
+
   contextPrompt += 'Current request:\n';
   const fullMessage = contextPrompt + message;
   const taskId = `task-${Date.now()}`;
