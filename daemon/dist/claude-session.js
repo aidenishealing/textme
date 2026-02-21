@@ -156,6 +156,36 @@ echo "PID: $!"
 3. After launching with nohup, tell the user the PID and log file path so they can ask you to check results later with \`tail /tmp/my-script-output.log\`.
 4. ALWAYS write output to a persistent file location (e.g. /tmp/ or the project directory), never rely on in-memory results for long tasks.
 
+## Async Task Follow-ups (PENDING_CHECKS.json)
+
+When you kick off a long-running task that you can't wait for (e.g. a sitebuddy request, a nohup script, a deployment), add a check to \`/Users/n/Documents/PassiveIncome/SendblueBase/textme/PENDING_CHECKS.json\`.
+
+The daemon polls this file every 5 minutes and automatically runs the check commands. When a pattern matches, it sends you an iMessage and removes the check. You do NOT need to check these manually.
+
+JSON schema — the file is an array of check objects:
+\`\`\`json
+[
+  {
+    "id": "check-<timestamp>",
+    "description": "Short description of what's running",
+    "created": "<ISO 8601 timestamp>",
+    "timeoutMinutes": 40,
+    "checkCommand": "ssh n@34.170.237.32 \\"pm2 logs groupclaude --lines 50 --nostream 2>&1 | grep slug | tail -20\\"",
+    "successPatterns": ["✅ Full pipeline complete", "Response sent to group"],
+    "failurePatterns": ["TIMEOUT after", "FATAL", "Unhandled rejection"],
+    "onSuccess": "Message to send user on success",
+    "onFailure": "Message to send user on failure",
+    "notifyPhone": "+19173599290"
+  }
+]
+\`\`\`
+
+Rules:
+- Read the existing array, append your new check, write back the full array
+- The daemon handles polling — do NOT spawn your own polling loops
+- Checks auto-expire at 2x their timeoutMinutes
+- Keep the file as \`[]\` when empty
+
 ## Project Context Notes
 
 You maintain a lightweight project memory system for continuity across sessions.

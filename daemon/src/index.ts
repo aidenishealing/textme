@@ -45,9 +45,11 @@ import {
   getRecentWorkingDirectories,
 } from './db.js';
 import type { DaemonConfig } from './types.js';
+import { audit, auditWithDuration, getRecentAuditEntries, formatAuditEntries } from './audit.js';
 import os from 'os';
 import fs from 'fs';
 import path from 'path';
+import { execSync } from 'child_process';
 
 // PID file for single instance lock
 const PID_FILE = path.join(os.homedir(), '.config', 'claude-imessage', 'daemon.pid');
@@ -55,6 +57,144 @@ const PID_FILE = path.join(os.homedir(), '.config', 'claude-imessage', 'daemon.p
 // Log file location
 const LOG_DIR = path.join(os.homedir(), '.local', 'log');
 const LOG_FILE = path.join(LOG_DIR, 'claude-imessage.log');
+
+// --- Async Check Polling System ---
+const PENDING_CHECKS_JSON = path.join(
+  '/Users/n/Documents/PassiveIncome/SendblueBase/textme',
+  'PENDING_CHECKS.json'
+);
+const CHECK_POLL_INTERVAL_MS = 5 * 60 * 1000; // Check every 5 minutes
+let checkPollInterval: NodeJS.Timeout | null = null;
+
+interface PendingCheck {
+  id: string;
+  description: string;
+  created: string;
+  timeoutMinutes: number;
+  checkCommand: string;
+  successPatterns: string[];
+  failurePatterns: string[];
+  onSuccess: string;
+  onFailure: string;
+  notifyPhone: string;
+}
+
+function loadPendingChecks(): PendingCheck[] {
+  try {
+    if (!fs.existsSync(PENDING_CHECKS_JSON)) return [];
+    const raw = fs.readFileSync(PENDING_CHECKS_JSON, 'utf-8').trim();
+    if (!raw || raw === '[]') return [];
+    return JSON.parse(raw) as PendingCheck[];
+  } catch (err) {
+    console.error('[Checks] Failed to read PENDING_CHECKS.json:', err);
+    return [];
+  }
+}
+
+function savePendingChecks(checks: PendingCheck[]): void {
+  try {
+    fs.writeFileSync(PENDING_CHECKS_JSON, JSON.stringify(checks, null, 2));
+  } catch (err) {
+    console.error('[Checks] Failed to write PENDING_CHECKS.json:', err);
+  }
+}
+
+async function runPendingChecks(): Promise<void> {
+  const checks = loadPendingChecks();
+  if (checks.length === 0) return;
+
+  console.log(`[Checks] Polling ${checks.length} pending check(s)...`);
+  const remaining: PendingCheck[] = [];
+
+  for (const check of checks) {
+    const createdAt = new Date(check.created).getTime();
+    const timeoutMs = check.timeoutMinutes * 60 * 1000;
+    const elapsed = Date.now() - createdAt;
+
+    // Check if this check has expired (2x the timeout as a generous buffer)
+    if (elapsed > timeoutMs * 2) {
+      console.log(`[Checks] "${check.description}" expired (${Math.round(elapsed / 60000)}min > ${check.timeoutMinutes * 2}min limit). Removing.`);
+      audit('check_expired', check.description, { elapsed: Math.round(elapsed / 60000) });
+      try {
+        if (sendblue && check.notifyPhone) {
+          await sendblue.sendMessage(
+            check.notifyPhone,
+            `⏰ Check expired: ${check.description}\n\nThe check ran past its timeout window and was removed. You may want to investigate manually.`
+          );
+        }
+      } catch (err) {
+        console.error('[Checks] Failed to send expiry notification:', err);
+      }
+      continue; // Don't add to remaining
+    }
+
+    // Run the check command
+    try {
+      console.log(`[Checks] Running: ${check.checkCommand.substring(0, 100)}...`);
+      const output = execSync(check.checkCommand, {
+        encoding: 'utf-8',
+        timeout: 30000, // 30s timeout for the check command itself
+        stdio: ['pipe', 'pipe', 'pipe'],
+      });
+
+      console.log(`[Checks] Output (${output.length} chars): "${output.trim().substring(0, 200)}"`);
+
+      // Check for success patterns
+      const successMatch = check.successPatterns.find(p => output.includes(p));
+      if (successMatch) {
+        console.log(`[Checks] ✅ "${check.description}" matched success: "${successMatch}"`);
+        audit('check_success', check.description, { pattern: successMatch });
+        try {
+          if (sendblue && check.notifyPhone) {
+            await sendblue.sendMessage(
+              check.notifyPhone,
+              `✅ ${check.onSuccess}\n\nMatched: "${successMatch}"`
+            );
+          }
+        } catch (err) {
+          console.error('[Checks] Failed to send success notification:', err);
+        }
+        continue; // Resolved — don't add to remaining
+      }
+
+      // Check for failure patterns
+      const failureMatch = check.failurePatterns.find(p => output.includes(p));
+      if (failureMatch) {
+        console.log(`[Checks] ❌ "${check.description}" matched failure: "${failureMatch}"`);
+        audit('check_failure', check.description, { pattern: failureMatch });
+        try {
+          if (sendblue && check.notifyPhone) {
+            await sendblue.sendMessage(
+              check.notifyPhone,
+              `❌ ${check.onFailure}\n\nMatched: "${failureMatch}"`
+            );
+          }
+        } catch (err) {
+          console.error('[Checks] Failed to send failure notification:', err);
+        }
+        continue; // Resolved — don't add to remaining
+      }
+
+      // No match yet — still pending
+      const minsElapsed = Math.round(elapsed / 60000);
+      console.log(`[Checks] ⏳ "${check.description}" still running (${minsElapsed}min elapsed)`);
+      remaining.push(check);
+    } catch (err) {
+      // Command failed (non-zero exit, timeout, etc.)
+      const errMsg = err instanceof Error ? err.message : String(err);
+      console.error(`[Checks] Command error for "${check.description}": ${errMsg.substring(0, 200)}`);
+      audit('check_error', check.description, { error: errMsg.substring(0, 200) });
+      // Keep it — might be a transient SSH error
+      remaining.push(check);
+    }
+  }
+
+  // Save updated checks (only remaining ones)
+  if (remaining.length !== checks.length) {
+    savePendingChecks(remaining);
+    console.log(`[Checks] ${checks.length - remaining.length} check(s) resolved. ${remaining.length} remaining.`);
+  }
+}
 
 /**
  * Setup logging to file
@@ -143,10 +283,12 @@ function acquireLock(): boolean {
             continue;
           }
           console.error(`[Daemon] Another instance is already running (PID: ${existingPid})`);
+          audit('pid_conflict', `Blocked by PID ${existingPid}`);
           return false;
         } else {
           // Process doesn't exist or isn't our daemon - stale PID file
           console.log(`[Daemon] Removing stale PID file (old PID: ${existingPid})`);
+          audit('stale_pid_cleared', `Cleared stale PID ${existingPid}`);
         }
       }
 
@@ -235,6 +377,12 @@ async function init(): Promise<void> {
   console.log(`[Daemon] Config path: ${getConfigPath()}`);
 
   config = loadConfig();
+  audit('daemon_start', `PID ${process.pid}`, {
+    workingDir: getState('current_project') || os.homedir(),
+    pollIntervalMs: config.pollIntervalMs,
+    whitelist: config.whitelist.map(w => '***' + w.slice(-4)),
+  });
+  audit('config_loaded', getConfigPath());
   console.log(`[Daemon] Whitelist: ${config.whitelist.join(', ')}`);
   console.log(`[Daemon] Poll interval: ${config.pollIntervalMs}ms`);
 
@@ -262,6 +410,16 @@ async function init(): Promise<void> {
     cleanupOldProcessedMessages();
     cleanupExpiredApprovals();
   }, 60 * 60 * 1000);
+
+  // Start async check polling system
+  console.log(`[Daemon] Starting check poller (every ${CHECK_POLL_INTERVAL_MS / 1000}s)`);
+  // Run first check after 30s (give daemon time to settle)
+  setTimeout(() => {
+    runPendingChecks().catch(err => console.error('[Checks] Initial poll error:', err));
+  }, 30_000);
+  checkPollInterval = setInterval(() => {
+    runPendingChecks().catch(err => console.error('[Checks] Poll error:', err));
+  }, CHECK_POLL_INTERVAL_MS);
 
   console.log('[Daemon] Initialization complete');
 
@@ -361,6 +519,8 @@ const HELP_MESSAGE = `Commands:
 • queue - View queued messages
 • history - Recent messages & outcomes
 • history N - Expand item N details
+• audit / log - Recent audit trail
+• audit N - Show N entries
 • home - Go to home directory
 • reset / fresh - Home + clear chat history
 • cd <path> - Change directory
@@ -503,6 +663,7 @@ async function sendFilesToUser(
       }
 
       console.log(`[SendFile] Sent successfully: ${file.path}`);
+      audit('file_sent', file.path);
     } catch (err) {
       console.error(`[SendFile] Failed to send ${file.path}:`, err);
       const errorMsg = err instanceof Error ? err.message : String(err);
@@ -614,6 +775,18 @@ function isDirsCommand(content: string): boolean {
   return normalized === 'dirs' || normalized === 'projects' || normalized === '/dirs' || normalized === '/projects';
 }
 
+function isAuditCommand(content: string): { isAudit: boolean; count: number } {
+  const normalized = content.toLowerCase().trim();
+  if (normalized === 'audit' || normalized === 'log' || normalized === 'logs') {
+    return { isAudit: true, count: 20 };
+  }
+  const match = normalized.match(/^(?:audit|log|logs)\s+(\d+)$/);
+  if (match) {
+    return { isAudit: true, count: Math.min(parseInt(match[1], 10), 50) };
+  }
+  return { isAudit: false, count: 0 };
+}
+
 function isCdCommand(content: string): { isCD: boolean; path: string | null; error?: string } {
   const normalized = content.trim();
   // Match "cd /path" or "cd ~/path" or "cd /path/to/dir"
@@ -690,13 +863,18 @@ async function askClaude(
     }
   } catch {}
 
-  // Read pending checks — async tasks that need follow-up
-  const pendingChecksPath = '/Users/n/Documents/PassiveIncome/SendblueBase/textme/PENDING_CHECKS.md';
+  // Read pending checks — async tasks being polled by daemon
   try {
-    if (fs.existsSync(pendingChecksPath)) {
-      const checksContent = fs.readFileSync(pendingChecksPath, 'utf-8').trim();
-      if (checksContent) {
-        contextPrompt += `\n[Pending Checks — act on these proactively before responding]\n${checksContent}\n---\n`;
+    if (fs.existsSync(PENDING_CHECKS_JSON)) {
+      const checksRaw = fs.readFileSync(PENDING_CHECKS_JSON, 'utf-8').trim();
+      if (checksRaw && checksRaw !== '[]') {
+        const checks = JSON.parse(checksRaw);
+        if (Array.isArray(checks) && checks.length > 0) {
+          const summary = checks.map((c: any) =>
+            `- ${c.description} (created ${c.created}, timeout ${c.timeoutMinutes}min)`
+          ).join('\n');
+          contextPrompt += `\n[Active async checks — daemon is auto-polling these every 5min]\n${summary}\n---\n`;
+        }
       }
     }
   } catch {}
@@ -727,6 +905,7 @@ async function processMessage(
   const processStart = Date.now();
   const contentPreview = content.substring(0, 60) + (content.length > 60 ? '...' : '');
   console.log(`[Process] Starting: "${contentPreview}"${fromQueue ? ' (from queue)' : ''}`);
+  audit('message_received', contentPreview, { phone: '***' + phoneNumber.slice(-4), fromQueue });
 
   // Notify what we're starting to work on (unless already notified for queued messages)
   if (!fromQueue) {
@@ -796,12 +975,21 @@ async function processMessage(
     addConversationMessage(phoneNumber, 'assistant', historyResponse);
     trimConversationHistory(phoneNumber, config.conversationWindowSize);
 
-    const duration = ((Date.now() - processStart) / 1000).toFixed(1);
+    const durationMs = Date.now() - processStart;
+    const duration = (durationMs / 1000).toFixed(1);
     console.log(`[Process] Done in ${duration}s | ${response.length} chars | ${activityUpdateCount} tool updates`);
+    auditWithDuration('message_processed', contentPreview, durationMs, {
+      responseChars: response.length,
+      toolCalls: activityUpdateCount,
+      filesSent: files.length,
+    });
   } catch (error) {
     const errorMsg = error instanceof Error ? error.message : String(error);
     const errorStack = error instanceof Error ? error.stack : '';
     console.error('[Process] Error:', errorMsg, errorStack);
+    auditWithDuration('message_error', contentPreview, Date.now() - processStart, {
+      error: errorMsg.substring(0, 200),
+    });
     killCurrentSession();
     await sendblue.sendMessage(
       phoneNumber,
@@ -867,6 +1055,7 @@ async function handleInterrupt(phoneNumber: string): Promise<void> {
   }
 
   console.log(`[Daemon] Interrupt requested for task ${runningTask.id}`);
+  audit('interrupt', runningTask.description.substring(0, 80));
 
   const partialOutput = interruptCurrentTask();
 
@@ -902,6 +1091,7 @@ function coalesceBatch(
       || isHomeCommand(content)
       || isResetCommand(content)
       || isDirsCommand(content)
+      || isAuditCommand(content).isAudit
       || isCdCommand(content).isCD;
   };
 
@@ -1001,6 +1191,7 @@ async function poll(): Promise<void> {
           try {
             const transcription = await transcribeAudio(mediaUrl);
             if (transcription) {
+              audit('transcription', transcription.substring(0, 80));
               const voiceNotice = `[Voice note transcription: "${transcription}"]`;
               content = textContent ? `${textContent}\n\n${voiceNotice}` : voiceNotice;
             } else {
@@ -1055,6 +1246,14 @@ async function poll(): Promise<void> {
           });
           await sendblue.sendMessage(msg.from_number, queueDisplay.trim());
         }
+        continue;
+      }
+
+      // Handle audit/log command - show recent audit trail
+      const auditResult = isAuditCommand(content);
+      if (auditResult.isAudit) {
+        const entries = getRecentAuditEntries(auditResult.count);
+        await sendblue.sendMessage(msg.from_number, formatAuditEntries(entries));
         continue;
       }
 
@@ -1138,6 +1337,8 @@ async function poll(): Promise<void> {
         const homeDir = os.homedir();
         setWorkingDirectory(homeDir);
         killCurrentSession();
+        audit('cd', homeDir, { from: getWorkingDirectory() });
+        audit('session_killed', 'home command');
         await sendblue.sendMessage(msg.from_number, `🏠 Now in: ${homeDir}`);
         continue;
       }
@@ -1148,6 +1349,7 @@ async function poll(): Promise<void> {
         setWorkingDirectory(homeDir);
         clearConversationHistory(msg.from_number);
         killCurrentSession();
+        audit('reset', 'Full reset: home + clear history');
         await sendblue.sendMessage(msg.from_number, `🔄 Fresh start!\nDirectory: ${homeDir}\nChat history cleared.`);
         continue;
       }
@@ -1177,6 +1379,7 @@ async function poll(): Promise<void> {
           await sendblue.sendMessage(msg.from_number, `❌ ${cdResult.error}`);
         } else if (cdResult.path) {
           if (fs.existsSync(cdResult.path) && fs.statSync(cdResult.path).isDirectory()) {
+            audit('cd', cdResult.path, { from: getWorkingDirectory() });
             setWorkingDirectory(cdResult.path);
             killCurrentSession();
             await sendblue.sendMessage(msg.from_number, `📂 Now in: ${cdResult.path}`);
@@ -1211,6 +1414,7 @@ async function poll(): Promise<void> {
           // Within grace period — kill current process and restart with combined message
           const combinedContent = currentProcessingContent + '\n\n' + content;
           console.log(`[Coalesce] New message within ${Math.round(elapsed / 1000)}s — restarting with combined input`);
+          audit('message_coalesced', content.substring(0, 60), { elapsedMs: elapsed });
 
           // Kill the running Claude process
           killCurrentSession();
@@ -1247,6 +1451,7 @@ async function poll(): Promise<void> {
         const qLen = getQueueLength();
         const workingDir = getWorkingDirectory();
         console.log(`[Poll] Queued (${qLen} in queue)`);
+        audit('message_queued', content.substring(0, 60), { position: qLen });
         await sendblue.sendMessage(
           msg.from_number,
           `📥 Queued (position ${qLen}): "${content.substring(0, 40)}${content.length > 40 ? '...' : ''}"\n📂 ${workingDir}`
@@ -1303,6 +1508,7 @@ function startPolling(): void {
 let shutdownRequested = false;
 async function shutdown(signal: string): Promise<void> {
   console.log(`[Daemon] ${signal} received...`);
+  audit('daemon_stop', signal, { wasProcessing: isProcessingMessage });
 
   // If already shutting down, force exit
   if (shutdownRequested) {
@@ -1327,6 +1533,7 @@ async function shutdown(signal: string): Promise<void> {
   }
 
   if (pollInterval) clearInterval(pollInterval);
+  if (checkPollInterval) clearInterval(checkPollInterval);
   killCurrentSession();
   closeDb();
   releaseLock();
@@ -1376,6 +1583,7 @@ async function main(): Promise<void> {
   // Setup crash handlers BEFORE init (so we can catch init failures)
   process.on('uncaughtException', async (error) => {
     console.error('[Daemon] Uncaught exception:', error);
+    audit('daemon_crash', 'uncaughtException: ' + (error.message || String(error)).substring(0, 200));
     await sendCrashNotification(error, 'uncaughtException');
     releaseLock();
     process.exit(1);
@@ -1384,6 +1592,7 @@ async function main(): Promise<void> {
   process.on('unhandledRejection', async (reason) => {
     const error = reason instanceof Error ? reason : new Error(String(reason));
     console.error('[Daemon] Unhandled rejection:', error);
+    audit('daemon_crash', 'unhandledRejection: ' + (error.message || String(error)).substring(0, 200));
     await sendCrashNotification(error, 'unhandledRejection');
     releaseLock();
     process.exit(1);

@@ -182,19 +182,35 @@ echo "PID: $!"
 3. After launching with nohup, tell the user the PID and log file path so they can ask you to check results later with \`tail /tmp/my-script-output.log\`.
 4. ALWAYS write output to a persistent file location (e.g. /tmp/ or the project directory), never rely on in-memory results for long tasks.
 
-## Async Task Follow-ups (PENDING_CHECKS.md)
+## Async Task Follow-ups (PENDING_CHECKS.json)
 
-When you kick off a long-running task that you can't wait for (e.g. a sitebuddy request, a nohup script, a deployment), write a check to \`/Users/n/Documents/PassiveIncome/SendblueBase/textme/PENDING_CHECKS.md\`:
+When you kick off a long-running task that you can't wait for (e.g. a sitebuddy request, a nohup script, a deployment), add a check to \`/Users/n/Documents/PassiveIncome/SendblueBase/textme/PENDING_CHECKS.json\`.
 
-\`\`\`markdown
-## Check: [description]
-- **Created:** [timestamp]
-- **What to check:** [specific command to run, e.g. "ssh n@34.170.237.32 pm2 logs groupclaude --lines 20"]
-- **Expected:** [what success looks like]
-- **Action if done:** [e.g. "tell user the result, then delete this check"]
+The daemon polls this file every 5 minutes and automatically runs the check commands. When a pattern matches, it sends you an iMessage and removes the check. You do NOT need to check these manually.
+
+JSON schema — the file is an array of check objects:
+\`\`\`json
+[
+  {
+    "id": "check-<timestamp>",
+    "description": "Short description of what's running",
+    "created": "<ISO 8601 timestamp>",
+    "timeoutMinutes": 40,
+    "checkCommand": "ssh n@34.170.237.32 \\"pm2 logs groupclaude --lines 50 --nostream 2>&1 | grep slug | tail -20\\"",
+    "successPatterns": ["✅ Full pipeline complete", "Response sent to group"],
+    "failurePatterns": ["TIMEOUT after", "FATAL", "Unhandled rejection"],
+    "onSuccess": "Message to send user on success",
+    "onFailure": "Message to send user on failure",
+    "notifyPhone": "+19173599290"
+  }
+]
 \`\`\`
 
-At the START of each session, if PENDING_CHECKS.md has entries, **act on them proactively** — run the check commands and report results to the user BEFORE handling their current request. After a check is resolved, remove it from the file. Keep the file empty when there are no pending checks.
+Rules:
+- Read the existing array, append your new check, write back the full array
+- The daemon handles polling — do NOT spawn your own polling loops
+- Checks auto-expire at 2x their timeoutMinutes
+- Keep the file as \`[]\` when empty
 
 ## Project Context Notes
 
