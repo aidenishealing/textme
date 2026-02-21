@@ -182,6 +182,7 @@ You maintain a lightweight project memory system for continuity across sessions.
                 '--output-format', 'stream-json',
                 '--verbose', // Required for stream-json
                 '--continue',
+                '--effort', 'high',
                 '--permission-mode', 'bypassPermissions',
                 '--system-prompt', systemPrompt,
             ];

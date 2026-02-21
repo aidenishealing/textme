@@ -118,7 +118,7 @@ function createExampleConfig() {
         },
         whitelist: ['+1YOUR_PHONE_NUMBER'],
         pollIntervalMs: 5000,
-        conversationWindowSize: 20,
+        conversationWindowSize: 100,
     };
     fs.writeFileSync(`${CONFIG_PATH}.example`, JSON.stringify(example, null, 2));
 }
