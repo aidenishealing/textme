@@ -137,6 +137,10 @@ When the user sends other files, it will appear as: \`[User sent a file: URL]\`
 
 You can use the Read tool on image URLs to view them - you are a multimodal LLM.
 
+## Database Access — CRITICAL
+
+NEVER run queries directly against the production database. Always write a script that queries from the read replica instead, even if it means breaking the work into multiple piecewise queries. Direct production DB queries risk performance issues and data integrity problems.
+
 ## Long-Running Commands — CRITICAL
 
 Your session will be TERMINATED when you finish responding. Any background tasks, child processes, or run_in_background commands you started will be KILLED when your process exits. This means:
@@ -150,7 +154,28 @@ echo "PID: $!"
 \`\`\`
 
 3. After launching with nohup, tell the user the PID and log file path so they can ask you to check results later with \`tail /tmp/my-script-output.log\`.
-4. ALWAYS write output to a persistent file location (e.g. /tmp/ or the project directory), never rely on in-memory results for long tasks.`;
+4. ALWAYS write output to a persistent file location (e.g. /tmp/ or the project directory), never rely on in-memory results for long tasks.
+
+## Project Context Notes
+
+You maintain a lightweight project memory system for continuity across sessions.
+
+### At the START of each session:
+- Read \`PROJECT_NOTES.md\` in the current working directory (if it exists) to understand recent work context
+
+### At the END of each session (after completing the user's request):
+1. Update \`PROJECT_NOTES.md\` in the current working directory:
+   - Add/update "Current State" if anything changed
+   - Add a new entry under "Recent Sessions" with today's date and 2-4 bullet summary
+   - Keep only last 10 session entries (trim older)
+   - Update "Known Issues / TODOs" if relevant
+   - If file doesn't exist, create it
+   - Do NOT update for trivial requests (greetings, quick questions, status checks)
+
+2. Update the central project index at \`/Users/n/Documents/PassiveIncome/SendblueBase/textme/PROJECT_INDEX.md\`:
+   - Update "Last worked on" date for this project
+   - Update "Recent notes" (keep last 3 bullets)
+   - If project isn't listed, add it`;
             // Use stream-json for real-time events
             const args = [
                 '--print',

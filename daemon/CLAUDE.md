@@ -22,3 +22,14 @@ Current commands:
 2. Add the handler in the poll loop
 3. **Update `HELP_MESSAGE` to include the new command**
 4. Update this list in CLAUDE.md
+
+### Project Notes System
+
+The daemon includes an automatic project memory system for continuity across Claude sessions:
+
+- **`PROJECT_NOTES.md`** (per-project): Claude reads this at session start and updates it after completing non-trivial work. Contains current state, recent session summaries (last 10), and known issues/TODOs. Created automatically by Claude on first meaningful work in a project.
+- **`PROJECT_INDEX.md`** (repo root at `/Users/n/Documents/PassiveIncome/SendblueBase/textme/PROJECT_INDEX.md`): Central index of all active projects. Injected into every Claude context prompt for cross-project awareness. Claude updates the "Last worked on" date and "Recent notes" after each session.
+- The system prompt in `src/claude-session.ts` instructs Claude on when/how to maintain these files.
+- The `askClaude()` function in `src/index.ts` reads and injects `PROJECT_INDEX.md` into the context prompt.
+- Do NOT manually edit `PROJECT_NOTES.md` files — they are auto-maintained by Claude.
+- `PROJECT_INDEX.md` can be seeded/corrected manually if needed.

@@ -553,6 +553,15 @@ async function askClaude(message, phoneNumber, onToolActivity) {
         }
         contextPrompt += '---\n';
     }
+    // Read central project index for cross-project awareness
+    const projectIndexPath = '/Users/n/Documents/PassiveIncome/SendblueBase/textme/PROJECT_INDEX.md';
+    try {
+        if (fs.existsSync(projectIndexPath)) {
+            const indexContent = fs.readFileSync(projectIndexPath, 'utf-8');
+            contextPrompt += `\n[Active Projects Index]\n${indexContent}\n---\n`;
+        }
+    }
+    catch { }
     contextPrompt += 'Current request:\n';
     const fullMessage = contextPrompt + message;
     const taskId = `task-${Date.now()}`;

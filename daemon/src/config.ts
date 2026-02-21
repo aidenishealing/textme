@@ -44,7 +44,7 @@ const CONFIG_PATH = path.join(CONFIG_DIR, 'config.json');
 
 const DEFAULT_CONFIG: Partial<DaemonConfig> = {
   pollIntervalMs: 5000,
-  conversationWindowSize: 20,
+  conversationWindowSize: 100,
 };
 
 export function loadConfig(): DaemonConfig {
@@ -133,7 +133,7 @@ function createExampleConfig(): void {
     },
     whitelist: ['+1YOUR_PHONE_NUMBER'],
     pollIntervalMs: 5000,
-    conversationWindowSize: 20,
+    conversationWindowSize: 100,
   };
 
   fs.writeFileSync(`${CONFIG_PATH}.example`, JSON.stringify(example, null, 2));

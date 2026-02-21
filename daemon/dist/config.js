@@ -40,7 +40,7 @@ const CONFIG_DIR = path.join(os.homedir(), '.config', 'claude-imessage');
 const CONFIG_PATH = path.join(CONFIG_DIR, 'config.json');
 const DEFAULT_CONFIG = {
     pollIntervalMs: 5000,
-    conversationWindowSize: 20,
+    conversationWindowSize: 100,
 };
 export function loadConfig() {
     if (!fs.existsSync(CONFIG_DIR)) {
