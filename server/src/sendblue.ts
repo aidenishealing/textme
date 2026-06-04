@@ -5,6 +5,7 @@
 import type { SendblueMessage, ServerConfig } from './types.js';
 
 const SENDBLUE_API_BASE = 'https://api.sendblue.com/api';
+const RETRYABLE_STATUS_CODES = new Set([429, 500, 502, 503, 504]);
 
 export class SendblueClient {
   private apiKey: string;
@@ -25,6 +26,47 @@ export class SendblueClient {
     };
   }
 
+  private async sleep(ms: number): Promise<void> {
+    await new Promise((resolve) => setTimeout(resolve, ms));
+  }
+
+  private async fetchWithRetry(
+    url: string,
+    init: RequestInit,
+    operation: string,
+    maxAttempts: number = 3
+  ): Promise<Response> {
+    let attempt = 1;
+    let lastResponse: Response | null = null;
+
+    while (attempt <= maxAttempts) {
+      const response = await fetch(url, init);
+      lastResponse = response;
+
+      if (response.ok) {
+        return response;
+      }
+
+      const shouldRetry = RETRYABLE_STATUS_CODES.has(response.status) && attempt < maxAttempts;
+      if (!shouldRetry) {
+        return response;
+      }
+
+      const backoffMs = 500 * Math.pow(2, attempt - 1);
+      console.error(
+        `[Sendblue] ${operation} attempt ${attempt}/${maxAttempts} failed with ${response.status}, retrying in ${backoffMs}ms`
+      );
+      await this.sleep(backoffMs);
+      attempt++;
+    }
+
+    if (!lastResponse) {
+      throw new Error(`[Sendblue] ${operation} failed without a response`);
+    }
+
+    return lastResponse;
+  }
+
   /**
    * Fetch messages from Sendblue API
    * @param since - Only fetch messages after this date
@@ -43,10 +85,10 @@ export class SendblueClient {
 
     console.error(`[Sendblue] Fetching messages: ${url}`);
 
-    const response = await fetch(url, {
+    const response = await this.fetchWithRetry(url, {
       method: 'GET',
       headers: this.getHeaders(),
-    });
+    }, 'getMessages');
 
     if (!response.ok) {
       const text = await response.text();
@@ -87,11 +129,11 @@ export class SendblueClient {
 
     console.error(`[Sendblue] Sending message to ${toNumber}: ${content.substring(0, 50)}...`);
 
-    const response = await fetch(`${SENDBLUE_API_BASE}/send-message`, {
+    const response = await this.fetchWithRetry(`${SENDBLUE_API_BASE}/send-message`, {
       method: 'POST',
       headers: this.getHeaders(),
       body: JSON.stringify(body),
-    });
+    }, 'sendMessage');
 
     if (!response.ok) {
       const text = await response.text();

@@ -13,17 +13,17 @@
     "test:watch": "vitest"
   },
   "dependencies": {
-    "better-sqlite3": "^11.10.0",
-    "formdata-node": "^6.0.3",
-    "google-libphonenumber": "^3.2.44",
-    "node-pty": "^1.1.0"
+    "better-sqlite3": "11.10.0",
+    "formdata-node": "6.0.3",
+    "google-libphonenumber": "3.2.44",
+    "node-pty": "1.1.0"
   },
   "devDependencies": {
-    "@types/better-sqlite3": "^7.6.12",
-    "@types/google-libphonenumber": "^7.4.30",
-    "@types/node": "^22.10.5",
-    "tsx": "^4.19.2",
-    "typescript": "^5.7.2",
-    "vitest": "^3.0.4"
+    "@types/better-sqlite3": "7.6.13",
+    "@types/google-libphonenumber": "7.4.30",
+    "@types/node": "22.19.5",
+    "tsx": "4.21.0",
+    "typescript": "5.9.3",
+    "vitest": "3.2.4"
   }
 }
